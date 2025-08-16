@@ -265,6 +265,20 @@ async def process_goal(message: Message, state: FSMContext):
             await message.answer("Это слишком много или мало калорий. Напиши цель словами 🙂")
             return
     
+    # Ищем числа в тексте (например: "например 1700", "калории 1800", "хочу 1500")
+    numbers = re.findall(r'\d+', goal)
+    if numbers:
+        calories = int(numbers[0])
+        if 800 <= calories <= 5000:  # разумный диапазон калорий
+            # Пользователь ввел калории в тексте
+            await message.answer(
+                f"Понял! Устанавливаю {calories} ккал как цель.\n\n"
+                "Теперь напиши цель словами (например: похудеть, набрать массу, поддерживать вес):",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await state.update_data(target_calories=calories)
+            return
+    
     await state.update_data(goal=goal)
     
     # Получаем все данные профиля
@@ -287,9 +301,29 @@ async def process_goal(message: Message, state: FSMContext):
         target['calories'] = data['target_calories']
         # Пересчитываем макросы под новые калории
         weight = data.get('weight', 70)
-        target['proteins'] = int(weight * 1.6)  # стандартный белок
-        target['fats'] = int(weight * 1)  # стандартные жиры
-        target['carbs'] = int((target['calories'] - target['proteins'] * 4 - target['fats'] * 9) / 4)
+        
+        # Определяем приоритеты макросов на основе цели
+        goal_text = data.get('goal', '').lower()
+        
+        if 'белок' in goal_text or 'протеин' in goal_text:
+            # Приоритет белку
+            target['proteins'] = int(weight * 2.0)  # 2 г/кг
+            target['fats'] = int(weight * 0.8)  # 0.8 г/кг
+        elif 'похуд' in goal_text:
+            # Приоритет белку при похудении
+            target['proteins'] = int(weight * 1.6)  # 1.6 г/кг
+            target['fats'] = int(weight * 0.8)  # 0.8 г/кг
+        else:
+            # Стандартные значения
+            target['proteins'] = int(weight * 1.2)  # 1.2 г/кг
+            target['fats'] = int(weight * 1.0)  # 1.0 г/кг
+        
+        # Рассчитываем углеводы как остаток
+        protein_calories = target['proteins'] * 4
+        fat_calories = target['fats'] * 9
+        remaining_calories = target['calories'] - protein_calories - fat_calories
+        target['carbs'] = max(0, int(remaining_calories / 4))  # 4 ккал на грамм углеводов
+        
         target['explanation'] = f"Целевые калории установлены пользователем: {data['target_calories']} ккал"
     
     # Проверяем, это новая цель или корректировка

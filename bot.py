@@ -5,7 +5,7 @@ import asyncio
 from datetime import datetime, date
 from aiogram import Bot, Dispatcher
 from aiogram.filters import Command
-from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton
+from aiogram.types import Message, ReplyKeyboardMarkup, KeyboardButton, ReplyKeyboardRemove
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram import Router, F
 from aiogram.client.default import DefaultBotProperties
@@ -150,7 +150,7 @@ async def process_gender(message: Message, state: FSMContext):
     await state.update_data(gender=gender)
     
     # Убираем кнопки
-    await message.answer("Сколько тебе лет? (введите число)", reply_markup=None)
+    await message.answer("Сколько тебе лет? (введите число)", reply_markup=ReplyKeyboardRemove())
     await state.set_state(ProfileStates.waiting_for_age)
 
 @router.message(ProfileStates.waiting_for_age)
@@ -233,7 +233,7 @@ async def process_activity(message: Message, state: FSMContext):
         "🩸 Здоровье: снизить холестерин, контролировать сахар\n"
         "🥗 Разнообразие: разнообразить рацион, попробовать новое\n\n"
         "Или опиши свою цель своими словами!",
-        reply_markup=None
+        reply_markup=ReplyKeyboardRemove()
     )
     await state.set_state(ProfileStates.waiting_for_goal)
 

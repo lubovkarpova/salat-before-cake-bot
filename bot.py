@@ -249,6 +249,22 @@ async def process_goal(message: Message, state: FSMContext):
         await message.answer("Напиши цель чуть подробнее 🙂")
         return
     
+    # Проверяем, не ввел ли пользователь число (калории)
+    if goal.isdigit():
+        calories = int(goal)
+        if 800 <= calories <= 5000:  # разумный диапазон калорий
+            # Пользователь ввел целевые калории
+            await message.answer(
+                f"Понял! Устанавливаю {calories} ккал как цель.\n\n"
+                "Теперь напиши цель словами (например: похудеть, набрать массу, поддерживать вес):",
+                reply_markup=ReplyKeyboardRemove()
+            )
+            await state.update_data(target_calories=calories)
+            return
+        else:
+            await message.answer("Это слишком много или мало калорий. Напиши цель словами 🙂")
+            return
+    
     await state.update_data(goal=goal)
     
     # Получаем все данные профиля
@@ -265,6 +281,16 @@ async def process_goal(message: Message, state: FSMContext):
         return
     
     target = db.calculate_target_calories(user_id)
+    
+    # Если пользователь указал конкретные калории, используем их
+    if 'target_calories' in data:
+        target['calories'] = data['target_calories']
+        # Пересчитываем макросы под новые калории
+        weight = data.get('weight', 70)
+        target['proteins'] = int(weight * 1.6)  # стандартный белок
+        target['fats'] = int(weight * 1)  # стандартные жиры
+        target['carbs'] = int((target['calories'] - target['proteins'] * 4 - target['fats'] * 9) / 4)
+        target['explanation'] = f"Целевые калории установлены пользователем: {data['target_calories']} ккал"
     
     # Проверяем, это новая цель или корректировка
     is_correction = await state.get_state() == ProfileStates.waiting_for_goal and 'goal' in data

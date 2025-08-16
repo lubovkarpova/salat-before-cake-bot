@@ -43,6 +43,7 @@ class ProfileStates(StatesGroup):
     waiting_for_weight = State()
     waiting_for_activity = State()
     waiting_for_goal = State()
+    waiting_for_target_confirmation = State()
 
 class FoodStates(StatesGroup):
     waiting_for_food_description = State()
@@ -229,7 +230,7 @@ async def process_activity(message: Message, state: FSMContext):
         "🎯 Похудение: похудеть, сбросить вес\n"
         "💪 Набор массы: набрать вес, нарастить мышцы\n"
         "⚖️ Поддержание: поддерживать форму, сохранить вес\n"
-        "🥩 Белок: следить за белком, повысить протеин\n"
+        "💪 Белок: следить за белком, повысить протеин\n"
         "🩸 Здоровье: снизить холестерин, контролировать сахар\n"
         "🥗 Разнообразие: разнообразить рацион, попробовать новое\n\n"
         "Или опиши свою цель своими словами!",
@@ -249,27 +250,87 @@ async def process_goal(message: Message, state: FSMContext):
     # Получаем все данные профиля
     data = await state.get_data()
     
-    # Сохраняем профиль в базу данных
-    success = db.save_user_profile(message.from_user.id, data)
+    # Рассчитываем целевые калории
+    user_id = message.from_user.id
     
-    if success:
-        await message.answer(
-            f"Отлично! Твой профиль сохранён:\n\n"
-            f"👤 Пол: {data['gender']}\n"
-            f"📅 Возраст: {data['age']} лет\n"
-            f"📏 Рост: {data['height']} см\n"
-            f"⚖️ Вес: {data['weight']} кг\n"
-            f"🏃‍♀️ Активность: {data['activity']}\n"
-            f"🎯 Цель: {data['goal']}\n\n"
-            f"Теперь можешь:\n"
-            f"• Написать, что ты ел(а) - я посчитаю КБЖУ\n"
-            f"• Использовать /target - посмотреть целевые калории\n"
-            f"• Использовать /day - посмотреть дневную сводку"
-        )
-    else:
+    # Временно сохраняем профиль для расчёта таргета
+    temp_success = db.save_user_profile(user_id, data)
+    if not temp_success:
         await message.answer("Ошибка сохранения профиля. Попробуй ещё раз.")
+        await state.clear()
+        return
     
-    await state.clear()
+    target = db.calculate_target_calories(user_id)
+    
+    # Формируем сообщение с профилем и таргетом
+    profile_text = f"📋 Твой профиль:\n\n"
+    profile_text += f"👤 Пол: {data['gender']}\n"
+    profile_text += f"📅 Возраст: {data['age']} лет\n"
+    profile_text += f"📏 Рост: {data['height']} см\n"
+    profile_text += f"⚖️ Вес: {data['weight']} кг\n"
+    profile_text += f"🏃‍♀️ Активность: {data['activity']}\n"
+    profile_text += f"🎯 Цель: {data['goal']}\n\n"
+    
+    target_text = f"🎯 Рассчитанные целевые показатели:\n\n"
+    target_text += f"📊 Базовый обмен веществ (BMR): {target['bmr']} ккал\n"
+    target_text += f"🔥 Общий расход энергии (TDEE): {target['tdee']} ккал\n"
+    target_text += f"🎯 Целевые калории: {target['calories']} ккал\n\n"
+    target_text += f"💪 Белки: {target['proteins']} г\n"
+    target_text += f"🥑 Жиры: {target['fats']} г\n"
+    target_text += f"🍞 Углеводы: {target['carbs']} г\n\n"
+    target_text += f"ℹ️ {target.get('explanation', '')}\n\n"
+    
+    # Кнопки для подтверждения
+    keyboard = ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="✅ Принять таргет"), KeyboardButton(text="✏️ Изменить профиль")]
+        ],
+        resize_keyboard=True
+    )
+    
+    await message.answer(
+        profile_text + target_text + 
+        "Подтверди эти показатели или измени профиль:",
+        reply_markup=keyboard
+    )
+    
+    # Сохраняем данные для возможного редактирования
+    await state.update_data(target=target)
+    await state.set_state(ProfileStates.waiting_for_target_confirmation)
+
+@router.message(ProfileStates.waiting_for_target_confirmation)
+async def process_target_confirmation(message: Message, state: FSMContext):
+    choice = message.text.strip()
+    
+    if choice == "✅ Принять таргет":
+        # Профиль уже сохранён, просто подтверждаем
+        await message.answer(
+            "Отлично! Твой профиль и целевые показатели сохранены.\n\n"
+            "Теперь можешь:\n"
+            "• Написать, что ты ел(а) - я посчитаю КБЖУ\n"
+            "• Использовать /target - посмотреть целевые калории\n"
+            "• Использовать /day - посмотреть дневную сводку",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.clear()
+        
+    elif choice == "✏️ Изменить профиль":
+        # Начинаем заново
+        await message.answer(
+            "Хорошо, давай настроим профиль заново.\n\nКакой у тебя пол?",
+            reply_markup=ReplyKeyboardMarkup(
+                keyboard=[
+                    [KeyboardButton(text="Мужской"), KeyboardButton(text="Женский")]
+                ],
+                resize_keyboard=True
+            )
+        )
+        await state.set_state(ProfileStates.waiting_for_gender)
+        
+    else:
+        await message.answer(
+            "Пожалуйста, выбери '✅ Принять таргет' или '✏️ Изменить профиль'"
+        )
 
 @router.message(lambda message: not message.text.startswith('/'))
 async def auto_food_analysis(message: Message, state: FSMContext):

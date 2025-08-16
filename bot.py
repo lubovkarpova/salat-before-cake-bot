@@ -44,6 +44,7 @@ class ProfileStates(StatesGroup):
     waiting_for_activity = State()
     waiting_for_goal = State()
     waiting_for_target_confirmation = State()
+    waiting_for_goal_correction = State()
 
 class FoodStates(StatesGroup):
     waiting_for_food_description = State()
@@ -267,6 +268,9 @@ async def process_goal(message: Message, state: FSMContext):
     
     target = db.calculate_target_calories(user_id)
     
+    # Проверяем, это новая цель или корректировка
+    is_correction = await state.get_state() == ProfileStates.waiting_for_goal and 'goal' in data
+    
     # Формируем сообщение с профилем и таргетом
     profile_text = f"📋 Твой профиль:\n\n"
     profile_text += f"👤 Пол: {data['gender']}\n"
@@ -293,11 +297,20 @@ async def process_goal(message: Message, state: FSMContext):
         resize_keyboard=True
     )
     
-    await message.answer(
-        profile_text + target_text + 
-        "Всё верно? Можно подтвердить или изменить.",
-        reply_markup=keyboard
-    )
+    if is_correction:
+        # Если это корректировка цели, показываем специальное сообщение
+        await message.answer(
+            f"Понял! Изменил цель на: {goal}\n\n" + target_text + 
+            "Всё верно? Можно подтвердить или ещё что-то изменить.",
+            reply_markup=keyboard
+        )
+    else:
+        # Если это новая цель, показываем полный профиль
+        await message.answer(
+            profile_text + target_text + 
+            "Всё верно? Можно подтвердить или изменить.",
+            reply_markup=keyboard
+        )
     
     # Сохраняем данные для возможного редактирования
     await state.update_data(target=target)
@@ -320,22 +333,96 @@ async def process_target_confirmation(message: Message, state: FSMContext):
         await state.clear()
         
     elif choice == "✏️ Изменить профиль":
-        # Начинаем заново
+        # Спрашиваем, что именно нужно изменить
         await message.answer(
-            "Ок, начнём заново. Укажи пол:",
-            reply_markup=ReplyKeyboardMarkup(
-                keyboard=[
-                    [KeyboardButton(text="Мужской"), KeyboardButton(text="Женский")]
-                ],
-                resize_keyboard=True
-            )
+            "Что именно хочешь изменить? Напиши своими словами, что не нравится 🙂",
+            reply_markup=ReplyKeyboardRemove()
         )
-        await state.set_state(ProfileStates.waiting_for_gender)
+        await state.set_state(ProfileStates.waiting_for_goal_correction)
         
     else:
         await message.answer(
             "Пожалуйста, выбери '✅ Принять таргет' или '✏️ Изменить профиль'"
         )
+
+@router.message(ProfileStates.waiting_for_goal_correction)
+async def process_goal_correction(message: Message, state: FSMContext):
+    user_feedback = message.text.strip().lower()
+    
+    # Получаем текущие данные профиля
+    data = await state.get_data()
+    current_goal = data.get('goal', '')
+    
+    # Анализируем обратную связь пользователя
+    new_goal = current_goal  # по умолчанию оставляем как есть
+    
+    if any(word in user_feedback for word in ['цель', 'задача', 'хочу', 'нужно']):
+        # Пользователь хочет изменить цель
+        await message.answer(
+            "Понял! Напиши новую цель своими словами:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(ProfileStates.waiting_for_goal)
+        return
+    
+    elif any(word in user_feedback for word in ['возраст', 'лет', 'года']):
+        # Пользователь хочет изменить возраст
+        await message.answer("Сколько тебе лет?")
+        await state.set_state(ProfileStates.waiting_for_age)
+        return
+    
+    elif any(word in user_feedback for word in ['рост', 'высота', 'см']):
+        # Пользователь хочет изменить рост
+        await message.answer("Рост в см? Например: 170")
+        await state.set_state(ProfileStates.waiting_for_height)
+        return
+    
+    elif any(word in user_feedback for word in ['вес', 'масса', 'кг']):
+        # Пользователь хочет изменить вес
+        await message.answer("Вес в кг? Например: 65")
+        await state.set_state(ProfileStates.waiting_for_weight)
+        return
+    
+    elif any(word in user_feedback for word in ['активность', 'спорт', 'движение']):
+        # Пользователь хочет изменить активность
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Низкий"), KeyboardButton(text="Средний"), KeyboardButton(text="Высокий")]
+            ],
+            resize_keyboard=True
+        )
+        await message.answer(
+            "Выбери уровень активности:\n\n"
+            "🏃‍♀️ Низкий — почти нет спорта\n"
+            "🏃‍♀️ Средний — спорт 2–3 раза в неделю\n"
+            "🏃‍♀️ Высокий — 4+ раз в неделю или физическая работа",
+            reply_markup=keyboard
+        )
+        await state.set_state(ProfileStates.waiting_for_activity)
+        return
+    
+    elif any(word in user_feedback for word in ['пол', 'мужской', 'женский']):
+        # Пользователь хочет изменить пол
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[
+                [KeyboardButton(text="Мужской"), KeyboardButton(text="Женский")]
+            ],
+            resize_keyboard=True
+        )
+        await message.answer(
+            "Укажи биологический пол — он влияет на расчёт калорий.",
+            reply_markup=keyboard
+        )
+        await state.set_state(ProfileStates.waiting_for_gender)
+        return
+    
+    else:
+        # Если не поняли, что хочет изменить, предлагаем изменить цель
+        await message.answer(
+            "Понял! Напиши новую цель своими словами:",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(ProfileStates.waiting_for_goal)
 
 @router.message(lambda message: not message.text.startswith('/'))
 async def auto_food_analysis(message: Message, state: FSMContext):

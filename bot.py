@@ -138,7 +138,12 @@ async def profile_start(message: Message, state: FSMContext):
         resize_keyboard=True
     )
     
-    await message.answer("Привет! Давай настроим твой профиль для расчёта КБЖУ.\n\nКакой у тебя пол?", reply_markup=keyboard)
+    await message.answer(
+        "Привет! Давай настроим твой профиль для расчёта КБЖУ.\n\n"
+        "Для точного расчёта калорий нужен биологический пол (влияет на обмен веществ).\n"
+        "Какой у тебя биологический пол?",
+        reply_markup=keyboard
+    )
     await state.set_state(ProfileStates.waiting_for_gender)
 
 @router.message(ProfileStates.waiting_for_gender)

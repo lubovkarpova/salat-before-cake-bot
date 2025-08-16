@@ -139,9 +139,9 @@ async def profile_start(message: Message, state: FSMContext):
     )
     
     await message.answer(
-        "Привет! Давай настроим твой профиль для расчёта КБЖУ.\n\n"
+        "Привет! Настроим профиль — и я помогу с КБЖУ.\n\n"
         "Для точного расчёта калорий нужен биологический пол (влияет на обмен веществ).\n"
-        "Какой у тебя биологический пол?",
+        "Укажи биологический пол — он влияет на расчёт калорий.",
         reply_markup=keyboard
     )
     await state.set_state(ProfileStates.waiting_for_gender)
@@ -156,7 +156,7 @@ async def process_gender(message: Message, state: FSMContext):
     await state.update_data(gender=gender)
     
     # Убираем кнопки
-    await message.answer("Сколько тебе лет? (введите число)", reply_markup=ReplyKeyboardRemove())
+    await message.answer("Сколько тебе лет?", reply_markup=ReplyKeyboardRemove())
     await state.set_state(ProfileStates.waiting_for_age)
 
 @router.message(ProfileStates.waiting_for_age)
@@ -172,7 +172,7 @@ async def process_age(message: Message, state: FSMContext):
     
     await state.update_data(age=age)
     
-    await message.answer("Какой у тебя рост в см? (например: 170)")
+    await message.answer("Рост в см? Например: 170")
     await state.set_state(ProfileStates.waiting_for_height)
 
 @router.message(ProfileStates.waiting_for_height)
@@ -188,7 +188,7 @@ async def process_height(message: Message, state: FSMContext):
     
     await state.update_data(height=height)
     
-    await message.answer("Какой у тебя вес в кг? (например: 65)")
+    await message.answer("Вес в кг? Например: 65")
     await state.set_state(ProfileStates.waiting_for_weight)
 
 @router.message(ProfileStates.waiting_for_weight)
@@ -212,10 +212,10 @@ async def process_weight(message: Message, state: FSMContext):
     )
     
     await message.answer(
-        "Какой у тебя уровень активности?\n\n"
-        "🏃‍♀️ Низкий - сидячий образ жизни, мало движения\n"
-        "🏃‍♀️ Средний - умеренная активность, спорт 2-3 раза в неделю\n"
-        "🏃‍♀️ Высокий - активный образ жизни, спорт 4+ раз в неделю",
+        "Выбери уровень активности:\n\n"
+        "🏃‍♀️ Низкий — почти нет спорта\n"
+        "🏃‍♀️ Средний — спорт 2–3 раза в неделю\n"
+        "🏃‍♀️ Высокий — 4+ раз в неделю или физическая работа",
         reply_markup=keyboard
     )
     await state.set_state(ProfileStates.waiting_for_activity)
@@ -231,7 +231,7 @@ async def process_activity(message: Message, state: FSMContext):
     
     # Убираем кнопки и добавляем примеры целей
     await message.answer(
-        "Какова твоя цель? Напиши своими словами, например:\n\n"
+        "Какая у тебя цель? Напиши своими словами или выбери пример ниже:\n\n"
         "🎯 Похудение: похудеть, сбросить вес\n"
         "💪 Набор массы: набрать вес, нарастить мышцы\n"
         "⚖️ Поддержание: поддерживать форму, сохранить вес\n"
@@ -295,7 +295,7 @@ async def process_goal(message: Message, state: FSMContext):
     
     await message.answer(
         profile_text + target_text + 
-        "Подтверди эти показатели или измени профиль:",
+        "Всё верно? Можно подтвердить или изменить.",
         reply_markup=keyboard
     )
     
@@ -310,11 +310,11 @@ async def process_target_confirmation(message: Message, state: FSMContext):
     if choice == "✅ Принять таргет":
         # Профиль уже сохранён, просто подтверждаем
         await message.answer(
-            "Отлично! Твой профиль и целевые показатели сохранены.\n\n"
-            "Теперь можешь:\n"
-            "• Написать, что ты ел(а) - я посчитаю КБЖУ\n"
-            "• Использовать /target - посмотреть целевые калории\n"
-            "• Использовать /day - посмотреть дневную сводку",
+            "Готово! Всё сохранил.\n\n"
+            "Теперь можно:\n"
+            "• Прислать еду — я посчитаю КБЖУ\n"
+            "• /target — твои цели\n"
+            "• /day — дневной отчёт",
             reply_markup=ReplyKeyboardRemove()
         )
         await state.clear()
@@ -322,7 +322,7 @@ async def process_target_confirmation(message: Message, state: FSMContext):
     elif choice == "✏️ Изменить профиль":
         # Начинаем заново
         await message.answer(
-            "Хорошо, давай настроим профиль заново.\n\nКакой у тебя пол?",
+            "Ок, начнём заново. Укажи пол:",
             reply_markup=ReplyKeyboardMarkup(
                 keyboard=[
                     [KeyboardButton(text="Мужской"), KeyboardButton(text="Женский")]

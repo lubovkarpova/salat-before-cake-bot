@@ -242,6 +242,83 @@ def get_daily_summary(user_id: int) -> dict:
         print("DEBUG: Данных нет, возвращаем нули")
         return {'calories': 0, 'proteins': 0, 'fats': 0, 'carbs': 0, 'meals': 0}
 
+def calculate_targets_with_gpt(profile_data: dict, bmr: int, tdee: int, goal: str) -> dict:
+    """Расчёт таргетов с помощью GPT для более гибкой интерпретации цели"""
+    print(f"DEBUG: Используем GPT для расчёта таргетов")
+    
+    try:
+        prompt = f"""Ты эксперт по питанию и фитнесу. На основе данных пользователя рассчитай персонализированные целевые показатели.
+
+ДАННЫЕ ПОЛЬЗОВАТЕЛЯ:
+- Пол: {profile_data.get('gender')}
+- Возраст: {profile_data.get('age')} лет
+- Рост: {profile_data.get('height')} см
+- Вес: {profile_data.get('weight')} кг
+- Уровень активности: {profile_data.get('activity')}
+- Базовый обмен веществ (BMR): {bmr} ккал
+- Общий расход энергии (TDEE): {tdee} ккал
+
+ЦЕЛЬ ПОЛЬЗОВАТЕЛЯ: "{goal}"
+
+ЗАДАЧА:
+Проанализируй цель и рассчитай:
+1. Целевые калории (учитывай нюансы: "чуть-чуть похудеть" = дефицит 10%, "быстро похудеть" = 20%, "набрать массу" = профицит 10-15%)
+2. Белки (г) - учитывай цель (похудение/набор массы = больше белка)
+3. Жиры (г) - минимум 0.8 г/кг веса, но не меньше 25% калорий
+4. Углеводы (г) - остаток калорий
+5. Краткое пояснение (2-3 предложения): почему именно такие значения и как это поможет достичь цели
+
+ВАЖНО: 
+- Калории должны быть адекватными (не меньше BMR-200 и не больше TDEE+500)
+- Белки: минимум 1.2 г/кг, для похудения/набора массы — 1.6-2.0 г/кг
+- Учитывай ключевые слова в цели ("белок", "похудеть", "набрать", "здоровье", "чуть-чуть", "быстро")
+
+Ответь СТРОГО в JSON формате:
+{{
+  "calories": число,
+  "proteins": число,
+  "fats": число,
+  "carbs": число,
+  "explanation": "текст пояснения"
+}}"""
+
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ты эксперт-нутрициолог. Отвечай только JSON."},
+                {"role": "user", "content": prompt}
+            ],
+            temperature=0.3,
+            max_tokens=400
+        )
+        
+        gpt_response = response.choices[0].message.content.strip()
+        print(f"DEBUG: GPT ответ: {gpt_response}")
+        
+        # Парсим JSON из ответа
+        import json
+        # Убираем markdown если есть
+        if '```json' in gpt_response:
+            gpt_response = gpt_response.split('```json')[1].split('```')[0].strip()
+        elif '```' in gpt_response:
+            gpt_response = gpt_response.split('```')[1].split('```')[0].strip()
+        
+        target_data = json.loads(gpt_response)
+        
+        # Добавляем BMR и TDEE
+        target_data['bmr'] = bmr
+        target_data['tdee'] = tdee
+        
+        print(f"DEBUG: GPT таргеты: калории={target_data['calories']}, белки={target_data['proteins']}, жиры={target_data['fats']}, углеводы={target_data['carbs']}")
+        
+        return target_data
+        
+    except Exception as e:
+        print(f"DEBUG: Ошибка GPT расчёта таргетов: {e}")
+        # Fallback на формульный расчёт
+        print("DEBUG: Используем формульный расчёт как fallback")
+        return None
+
 # ============= PROD HANDLERS (SYNCHRONIZED) =============
 
 @router.message(Command("profile"))
@@ -414,9 +491,28 @@ async def process_goal(message: Message, state: FSMContext):
         await state.clear()
         return
     
-    target = db.calculate_target_calories(user_id)
+    # В тестовом режиме используем GPT для расчёта таргетов (если калории не указаны вручную)
+    if BOT_MODE == 'test' and 'target_calories' not in data:
+        await message.answer("🧪 Анализирую твою цель с помощью AI... ⏳")
+        
+        # Получаем BMR и TDEE для передачи в GPT
+        bmr = db.calculate_bmr(user_id)
+        profile = db.get_user_profile(user_id)
+        activity = profile.get('activity', 'Средний').lower()
+        activity_multipliers = {'низкий': 1.2, 'средний': 1.55, 'высокий': 1.725}
+        tdee = int(bmr * activity_multipliers.get(activity, 1.55))
+        
+        # Пробуем GPT расчёт
+        target = calculate_targets_with_gpt(data, bmr, tdee, goal)
+        
+        # Если GPT не сработал, используем формулы
+        if target is None:
+            target = db.calculate_target_calories(user_id)
+    else:
+        # В прод-режиме или если калории указаны вручную - используем формулы
+        target = db.calculate_target_calories(user_id)
     
-    # Если пользователь указал конкретные калории, используем их
+    # Если пользователь указал конкретные калории, переопределяем их
     if 'target_calories' in data:
         target['calories'] = data['target_calories']
         # Пересчитываем макросы под новые калории

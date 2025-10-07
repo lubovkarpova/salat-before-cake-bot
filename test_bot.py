@@ -14,15 +14,26 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from dotenv import load_dotenv
 from openai import OpenAI
-from database import db
+from database import Database
 
 load_dotenv()
 
-API_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
-OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+# Режим работы: 'test' или 'production'
+BOT_MODE = os.getenv('BOT_MODE', 'production')
+
+if BOT_MODE == 'test':
+    API_TOKEN = os.getenv('TEST_TELEGRAM_BOT_TOKEN')
+    OPENAI_API_KEY = os.getenv('TEST_OPENAI_API_KEY')
+    DB_PATH = "test_nutrition_bot.db"
+    print("🧪 ТЕСТОВЫЙ РЕЖИМ АКТИВЕН")
+else:
+    API_TOKEN = os.getenv('TELEGRAM_BOT_TOKEN')
+    OPENAI_API_KEY = os.getenv('OPENAI_API_KEY')
+    DB_PATH = "nutrition_bot.db"
+    print("🚀 ПРОДАКШН РЕЖИМ АКТИВЕН")
 
 if not API_TOKEN or not OPENAI_API_KEY:
-    print("Ошибка: не найдены TELEGRAM_BOT_TOKEN или OPENAI_API_KEY в переменных окружения")
+    print("Ошибка: не найдены токены в переменных окружения")
     exit(1)
 
 client = OpenAI(api_key=OPENAI_API_KEY)
@@ -35,6 +46,9 @@ bot = Bot(
 )
 dp = Dispatcher(storage=MemoryStorage())
 router = Router()
+
+# Инициализируем базу данных с правильным путем
+db = Database(DB_PATH)
 
 class ProfileStates(StatesGroup):
     waiting_for_gender = State()
@@ -49,6 +63,120 @@ class ProfileStates(StatesGroup):
 class FoodStates(StatesGroup):
     waiting_for_food_description = State()
     waiting_for_clarification = State()
+
+@router.message(Command("start", "help"))
+async def send_welcome(message: Message):
+    mode_prefix = "🧪 ТЕСТ: " if BOT_MODE == 'test' else ""
+    await message.answer(
+        f"{mode_prefix}Привет! Я бот, который не учит, а просто считает КБЖУ.\n\n"
+        "📍 Напиши, что ты ел(а) — я разберу по БЖУ\n"
+        "⚙️ Хочешь точности — настрой профиль: /profile\n"
+        "📊 Посмотреть цели: /target\n"
+        "📅 Отчёт за день: /day\n\n"
+        "Всё просто. Без диет и занудства."
+    )
+
+@router.message(Command("test"))
+async def test_command(message: Message):
+    if BOT_MODE == 'test':
+        await message.answer(
+            "🧪 ТЕСТОВЫЕ КОМАНДЫ:\n\n"
+            "/test_profile - быстрая настройка тестового профиля\n"
+            "/test_food - тест анализа еды\n"
+            "/test_target - тест расчета целей\n"
+            "/clear_data - очистить все данные\n"
+            "/status - статус бота"
+        )
+    else:
+        await message.answer("Эта команда доступна только в тестовом режиме")
+
+@router.message(Command("test_profile"))
+async def test_profile_setup(message: Message):
+    if BOT_MODE != 'test':
+        return
+    
+    # Быстрая настройка тестового профиля
+    test_data = {
+        'gender': 'Женский',
+        'age': 25,
+        'height': 165,
+        'weight': 60,
+        'activity': 'Средний',
+        'goal': 'похудеть и белок'
+    }
+    
+    success = db.save_user_profile(message.from_user.id, test_data)
+    if success:
+        await message.answer(
+            "🧪 Тестовый профиль создан:\n"
+            "👤 Женский, 25 лет\n"
+            "📏 165 см, 60 кг\n"
+            "🏃‍♀️ Средняя активность\n"
+            "🎯 Цель: похудеть и белок\n\n"
+            "Используй /target для проверки расчета"
+        )
+    else:
+        await message.answer("❌ Ошибка создания тестового профиля")
+
+@router.message(Command("test_food"))
+async def test_food_analysis(message: Message):
+    if BOT_MODE != 'test':
+        return
+    
+    # Тест анализа еды
+    test_food = "яблоко среднее"
+    await message.answer(f"🧪 Тестирую анализ еды: '{test_food}'")
+    
+    # Минимальный вызов к OpenAI для проверки соединения
+    try:
+        prompt = f"Оцени КБЖУ {test_food}"
+        response = client.chat.completions.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "Ты эксперт по питанию. Оценивай КБЖУ продуктов на основе описания пользователя."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=50
+        )
+        text = response.choices[0].message.content
+        await message.answer("🧪 Ответ OpenAI получен")
+        await message.answer(text)
+    except Exception as e:
+        await message.answer(f"❌ Ошибка OpenAI: {e}")
+
+@router.message(Command("clear_data"))
+async def clear_test_data(message: Message):
+    if BOT_MODE != 'test':
+        return
+    
+    # Очистка тестовых данных
+    try:
+        import sqlite3
+        with sqlite3.connect(DB_PATH) as conn:
+            cursor = conn.cursor()
+            cursor.execute("DELETE FROM users WHERE user_id = ?", (message.from_user.id,))
+            cursor.execute("DELETE FROM meals WHERE user_id = ?", (message.from_user.id,))
+            cursor.execute("DELETE FROM daily_summaries WHERE user_id = ?", (message.from_user.id,))
+            conn.commit()
+        
+        await message.answer("🧪 Все тестовые данные очищены")
+    except Exception as e:
+        await message.answer(f"❌ Ошибка очистки данных: {e}")
+
+@router.message(Command("status"))
+async def bot_status(message: Message):
+    if BOT_MODE != 'test':
+        return
+    
+    status = f"🧪 СТАТУС БОТА:\n\n"
+    status += f"Режим: {'ТЕСТОВЫЙ' if BOT_MODE == 'test' else 'ПРОДАКШН'}\n"
+    status += f"База данных: {DB_PATH}\n"
+    status += f"OpenAI API: {'✅' if OPENAI_API_KEY else '❌'}\n"
+    status += f"Telegram Bot: {'✅' if API_TOKEN else '❌'}\n"
+    
+    await message.answer(status)
+
+# ============= HELPER FUNCTIONS =============
 
 def parse_kbju_from_gpt(gpt_response: str) -> dict:
     """Извлекает КБЖУ из ответа GPT"""
@@ -114,21 +242,13 @@ def get_daily_summary(user_id: int) -> dict:
         print("DEBUG: Данных нет, возвращаем нули")
         return {'calories': 0, 'proteins': 0, 'fats': 0, 'carbs': 0, 'meals': 0}
 
-@router.message(Command("start", "help"))
-async def send_welcome(message: Message):
-    await message.answer(
-        "Привет! Я бот, который не учит, а просто считает КБЖУ.\n\n"
-        "📍 Напиши, что ты ел(а) — я разберу по БЖУ\n"
-        "⚙️ Хочешь точности — настрой профиль: /profile\n"
-        "📊 Посмотреть цели: /target\n"
-        "📅 Отчёт за день: /day\n\n"
-        "Всё просто. Без диет и занудства."
-    )
+# ============= PROD HANDLERS (SYNCHRONIZED) =============
 
 @router.message(Command("profile"))
 async def profile_start(message: Message, state: FSMContext):
+    mode_prefix = "🧪 " if BOT_MODE == 'test' else ""
     if db.user_profile_exists(message.from_user.id):
-        await message.answer("У тебя уже есть профиль! Используй /target чтобы посмотреть целевые калории.")
+        await message.answer(f"{mode_prefix}У тебя уже есть профиль! Используй /target чтобы посмотреть целевые калории.")
         return
     
     keyboard = ReplyKeyboardMarkup(
@@ -139,7 +259,7 @@ async def profile_start(message: Message, state: FSMContext):
     )
     
     await message.answer(
-        "Начнём с профиля — так расчёт КБЖУ будет точнее.\n\n"
+        f"{mode_prefix}Начнём с профиля — так расчёт КБЖУ будет точнее.\n\n"
         "Сначала — пол. Он влияет на обмен веществ.",
         reply_markup=keyboard
     )
@@ -329,8 +449,10 @@ async def process_goal(message: Message, state: FSMContext):
     # Проверяем, это новая цель или корректировка
     is_correction = await state.get_state() == ProfileStates.waiting_for_goal and 'goal' in data
     
+    mode_prefix = "🧪 " if BOT_MODE == 'test' else ""
+    
     # Формируем сообщение с профилем и таргетом
-    profile_text = f"📋 Твой профиль:\n\n"
+    profile_text = f"{mode_prefix}📋 Твой профиль:\n\n"
     profile_text += f"👤 Пол: {data['gender']}\n"
     profile_text += f"📅 Возраст: {data['age']} лет\n"
     profile_text += f"📏 Рост: {data['height']} см\n"
@@ -654,7 +776,8 @@ async def show_daily_summary(message: Message):
     fats_progress = (daily_summary['fats'] / target['fats']) * 100 if target['fats'] > 0 else 0
     carbs_progress = (daily_summary['carbs'] / target['carbs']) * 100 if target['carbs'] > 0 else 0
     
-    text = f"📊 Дневная сводка ({daily_summary['meals']} приёмов пищи):\n\n"
+    mode_prefix = "🧪 " if BOT_MODE == 'test' else ""
+    text = f"{mode_prefix}📊 Дневная сводка ({daily_summary['meals']} приёмов пищи):\n\n"
     text += f"🔥 Калории: {daily_summary['calories']} / {target['calories']} ккал ({calories_progress:.1f}%)\n"
     text += f"🥩 Белки: {daily_summary['proteins']} / {target['proteins']} г ({proteins_progress:.1f}%)\n"
     text += f"🥑 Жиры: {daily_summary['fats']} / {target['fats']} г ({fats_progress:.1f}%)\n"
@@ -693,7 +816,8 @@ async def show_target_calories(message: Message):
         await message.answer("Ошибка расчёта целевых калорий. Проверь свой профиль.")
         return
     
-    text = f"🎯 Целевые калории для {profile.get('gender', 'пользователя')}:\n\n"
+    mode_prefix = "🧪 " if BOT_MODE == 'test' else ""
+    text = f"{mode_prefix}🎯 Целевые калории для {profile.get('gender', 'пользователя')}:\n\n"
     text += f"📊 Базовый обмен веществ (BMR): {target['bmr']} ккал\n"
     text += f"🔥 Общий расход энергии (TDEE): {target['tdee']} ккал\n"
     text += f"🎯 Целевые калории: {target['calories']} ккал\n\n"
@@ -720,7 +844,8 @@ async def show_meals(message: Message):
         await message.answer("Сегодня ты ещё ничего не ел(а). Добавь еду!")
         return
     
-    text = f"🍽 Приёмы пищи за сегодня ({len(meals)}):\n\n"
+    mode_prefix = "🧪 " if BOT_MODE == 'test' else ""
+    text = f"{mode_prefix}🍽 Приёмы пищи за сегодня ({len(meals)}):\n\n"
     
     for i, meal in enumerate(meals, 1):
         text += f"{i}. {meal['description']}\n"
@@ -731,7 +856,8 @@ async def show_meals(message: Message):
 dp.include_router(router)
 
 async def main():
+    print(f"🤖 Бот запущен в режиме: {BOT_MODE}")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    asyncio.run(main())
+    asyncio.run(main()) 

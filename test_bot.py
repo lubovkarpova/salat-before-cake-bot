@@ -597,7 +597,15 @@ async def process_target_confirmation(message: Message, state: FSMContext):
     choice = message.text.strip()
     
     if choice == "✅ Принять таргет":
-        # Профиль уже сохранён, просто подтверждаем
+        # Сохраняем профиль с таргетами
+        data = await state.get_data()
+        user_id = message.from_user.id
+        
+        # Сохраняем профиль с принятыми таргетами
+        success = db.save_user_profile(user_id, data)
+        if success:
+            print(f"DEBUG: Профиль с таргетами сохранен для user_id={user_id}")
+        
         await message.answer(
             "Готово! Всё на месте.\n\n"
             "Что дальше:\n"
@@ -859,8 +867,26 @@ async def show_daily_summary(message: Message):
     # Получаем дневную сводку
     daily_summary = get_daily_summary(user_id)
     
-    # Получаем целевые калории
-    target = db.calculate_target_calories(user_id)
+    # Сначала пробуем получить сохраненные таргеты
+    target = db.get_saved_targets(user_id)
+    
+    # Если нет сохраненных, рассчитываем (в тест-режиме используем GPT)
+    if target is None:
+        if BOT_MODE == 'test':
+            profile = db.get_user_profile(user_id)
+            bmr = db.calculate_bmr(user_id)
+            activity = profile.get('activity', 'Средний').lower()
+            activity_multipliers = {'низкий': 1.2, 'средний': 1.55, 'высокий': 1.725}
+            tdee = int(bmr * activity_multipliers.get(activity, 1.55))
+            goal = profile.get('goal', '')
+            
+            target = calculate_targets_with_gpt(profile, bmr, tdee, goal)
+            
+            # Если GPT не сработал, используем формулы
+            if target is None:
+                target = db.calculate_target_calories(user_id)
+        else:
+            target = db.calculate_target_calories(user_id)
     
     if target['calories'] == 0:
         await message.answer("Ошибка расчёта целевых калорий. Проверь свой профиль.")
@@ -905,7 +931,28 @@ async def show_target_calories(message: Message):
     
     profile = db.get_user_profile(user_id)
     print(f"DEBUG: Профиль пользователя: {profile}")
-    target = db.calculate_target_calories(user_id)
+    
+    # Сначала пробуем получить сохраненные таргеты
+    target = db.get_saved_targets(user_id)
+    
+    # Если нет сохраненных, рассчитываем
+    if target is None:
+        # В тест-режиме используем GPT для расчёта таргетов
+        if BOT_MODE == 'test':
+            bmr = db.calculate_bmr(user_id)
+            activity = profile.get('activity', 'Средний').lower()
+            activity_multipliers = {'низкий': 1.2, 'средний': 1.55, 'высокий': 1.725}
+            tdee = int(bmr * activity_multipliers.get(activity, 1.55))
+            goal = profile.get('goal', '')
+            
+            target = calculate_targets_with_gpt(profile, bmr, tdee, goal)
+            
+            # Если GPT не сработал, используем формулы
+            if target is None:
+                target = db.calculate_target_calories(user_id)
+        else:
+            target = db.calculate_target_calories(user_id)
+    
     print(f"DEBUG: Целевые калории: {target}")
     
     if target['calories'] == 0:

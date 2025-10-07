@@ -26,6 +26,11 @@ class Database:
                         weight INTEGER,
                         activity TEXT,
                         goal TEXT,
+                        target_calories INTEGER,
+                        target_proteins INTEGER,
+                        target_fats INTEGER,
+                        target_carbs INTEGER,
+                        target_explanation TEXT,
                         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
                     )
                 ''')
@@ -79,19 +84,42 @@ class Database:
             with sqlite3.connect(self.db_path) as conn:
                 cursor = conn.cursor()
                 
-                cursor.execute('''
-                    INSERT OR REPLACE INTO users 
-                    (user_id, gender, age, height, weight, activity, goal)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                ''', (
-                    user_id,
-                    profile_data.get('gender'),
-                    profile_data.get('age'),
-                    profile_data.get('height'),
-                    profile_data.get('weight'),
-                    profile_data.get('activity'),
-                    profile_data.get('goal')
-                ))
+                # Если в данных есть таргеты, сохраняем и их
+                if 'target' in profile_data:
+                    target = profile_data['target']
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO users 
+                        (user_id, gender, age, height, weight, activity, goal, 
+                         target_calories, target_proteins, target_fats, target_carbs, target_explanation)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        user_id,
+                        profile_data.get('gender'),
+                        profile_data.get('age'),
+                        profile_data.get('height'),
+                        profile_data.get('weight'),
+                        profile_data.get('activity'),
+                        profile_data.get('goal'),
+                        target.get('calories'),
+                        target.get('proteins'),
+                        target.get('fats'),
+                        target.get('carbs'),
+                        target.get('explanation')
+                    ))
+                else:
+                    cursor.execute('''
+                        INSERT OR REPLACE INTO users 
+                        (user_id, gender, age, height, weight, activity, goal)
+                        VALUES (?, ?, ?, ?, ?, ?, ?)
+                    ''', (
+                        user_id,
+                        profile_data.get('gender'),
+                        profile_data.get('age'),
+                        profile_data.get('height'),
+                        profile_data.get('weight'),
+                        profile_data.get('activity'),
+                        profile_data.get('goal')
+                    ))
                 
                 conn.commit()
                 print(f"DEBUG: Профиль пользователя {user_id} сохранён")
@@ -324,6 +352,40 @@ class Database:
         except Exception as e:
             print(f"DEBUG: Ошибка получения приёмов пищи: {e}")
             return []
+
+    def get_saved_targets(self, user_id: int) -> Optional[Dict]:
+        """Получение сохраненных целевых показателей пользователя"""
+        try:
+            with sqlite3.connect(self.db_path) as conn:
+                cursor = conn.cursor()
+                
+                cursor.execute('''
+                    SELECT target_calories, target_proteins, target_fats, target_carbs, target_explanation
+                    FROM users WHERE user_id = ?
+                ''', (user_id,))
+                
+                row = cursor.fetchone()
+                if row and row[0] is not None:  # Если есть сохраненные таргеты
+                    bmr = self.calculate_bmr(user_id)
+                    profile = self.get_user_profile(user_id)
+                    activity = profile.get('activity', 'Средний').lower()
+                    activity_multipliers = {'низкий': 1.2, 'средний': 1.55, 'высокий': 1.725}
+                    tdee = int(bmr * activity_multipliers.get(activity, 1.55))
+                    
+                    return {
+                        'calories': row[0],
+                        'proteins': row[1],
+                        'fats': row[2],
+                        'carbs': row[3],
+                        'bmr': bmr,
+                        'tdee': tdee,
+                        'explanation': row[4] or ''
+                    }
+                return None
+                
+        except Exception as e:
+            print(f"DEBUG: Ошибка получения сохраненных таргетов: {e}")
+            return None
 
     def calculate_bmr(self, user_id: int) -> int:
         """Расчёт базового обмена веществ (BMR) по формуле Миффлина-Сан Жеора"""

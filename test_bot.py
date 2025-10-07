@@ -778,9 +778,12 @@ async def auto_food_analysis(message: Message, state: FSMContext):
         response_text += f"🥑 Жиры: {daily_summary['fats']} г\n"
         response_text += f"🍞 Углеводы: {daily_summary['carbs']} г"
         
-        # Добавляем прогресс к цели
-        target = db.calculate_target_calories(message.from_user.id)
-        if target['calories'] > 0:
+        # Добавляем прогресс к цели (используем сохраненные таргеты)
+        target = db.get_saved_targets(message.from_user.id)
+        if target is None:
+            target = db.calculate_target_calories(message.from_user.id)
+        
+        if target and target['calories'] > 0:
             progress = (daily_summary['calories'] / target['calories']) * 100
             response_text += f"\n\n🎯 Прогресс к цели: {progress:.1f}%"
         
@@ -840,9 +843,12 @@ async def food_clarification(message: Message, state: FSMContext):
         response_text += f"🥑 Жиры: {daily_summary['fats']} г\n"
         response_text += f"🍞 Углеводы: {daily_summary['carbs']} г"
         
-        # Добавляем прогресс к цели
-        target = db.calculate_target_calories(message.from_user.id)
-        if target['calories'] > 0:
+        # Добавляем прогресс к цели (используем сохраненные таргеты)
+        target = db.get_saved_targets(message.from_user.id)
+        if target is None:
+            target = db.calculate_target_calories(message.from_user.id)
+        
+        if target and target['calories'] > 0:
             progress = (daily_summary['calories'] / target['calories']) * 100
             response_text += f"\n\n🎯 Прогресс к цели: {progress:.1f}%"
         

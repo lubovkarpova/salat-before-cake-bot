@@ -63,6 +63,8 @@ class ProfileStates(StatesGroup):
 class FoodStates(StatesGroup):
     waiting_for_food_description = State()
     waiting_for_clarification = State()
+    waiting_for_review = State()  # Ожидание подтверждения после ревью
+    waiting_for_correction = State()  # Ожидание уточнения после проблем
 
 @router.message(Command("start", "help"))
 async def send_welcome(message: Message):
@@ -80,12 +82,17 @@ async def send_welcome(message: Message):
 async def test_command(message: Message):
     if BOT_MODE == 'test':
         await message.answer(
-            "🧪 ТЕСТОВЫЕ КОМАНДЫ:\n\n"
-            "/test_profile - быстрая настройка тестового профиля\n"
-            "/test_food - тест анализа еды\n"
-            "/test_target - тест расчета целей\n"
-            "/clear_data - очистить все данные\n"
-            "/status - статус бота"
+            "🧪 ТЕСТОВЫЙ БОТ - GPT-5\n\n"
+            "📋 Команды:\n"
+            "/test_profile - быстрая настройка профиля\n"
+            "/clear_data - очистить данные\n"
+            "/status - статус бота\n\n"
+            "🎯 Флоу анализа еды:\n"
+            "1️⃣ Пиши еду → GPT-5 анализ\n"
+            "2️⃣ GPT-5 валидация\n"
+            "3️⃣ Ревью (кнопки подтверждения)\n"
+            "4️⃣ Сохранение после ОК\n\n"
+            "💡 Просто пиши продукты - всё работает автоматически!"
         )
     else:
         await message.answer("Эта команда доступна только в тестовом режиме")
@@ -118,31 +125,6 @@ async def test_profile_setup(message: Message):
     else:
         await message.answer("❌ Ошибка создания тестового профиля")
 
-@router.message(Command("test_food"))
-async def test_food_analysis(message: Message):
-    if BOT_MODE != 'test':
-        return
-    
-    # Тест анализа еды
-    test_food = "яблоко среднее"
-    await message.answer(f"🧪 Тестирую анализ еды: '{test_food}'")
-    
-    # Минимальный вызов к OpenAI для проверки соединения
-    try:
-        prompt = f"Оцени КБЖУ {test_food}"
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты эксперт по питанию. Оценивай КБЖУ продуктов на основе описания пользователя."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=50
-        )
-        text = response.choices[0].message.content
-        await message.answer("🧪 Ответ OpenAI получен")
-        await message.answer(text)
-    except Exception as e:
-        await message.answer(f"❌ Ошибка OpenAI: {e}")
 
 @router.message(Command("clear_data"))
 async def clear_test_data(message: Message):
@@ -242,9 +224,124 @@ def get_daily_summary(user_id: int) -> dict:
         print("DEBUG: Данных нет, возвращаем нули")
         return {'calories': 0, 'proteins': 0, 'fats': 0, 'carbs': 0, 'meals': 0}
 
+# ============= GPT-5 FUNCTIONS =============
+
+def analyze_food_with_gpt5(food_description: str) -> dict:
+    """Анализирует еду с помощью GPT-5 с использованием custom tool и JSON grammar"""
+    print(f"DEBUG: Анализируем еду через GPT-5: '{food_description}'")
+    
+    try:
+        input_text = f"""Проанализируй пищевую ценность и рассчитай КБЖУ для:
+
+{food_description}
+
+Рассчитай:
+- calories: общие калории в ккал (суммируй все продукты если их несколько)
+- proteins: общие белки в граммах  
+- fats: общие жиры в граммах
+- carbs: общие углеводы в граммах
+- portion_clear: true/false
+
+КРИТЕРИИ portion_clear:
+- true если: указаны граммы/мл/штуки (например "200г", "1 блин", "25гр сыра")
+- true если: детальное описание с количествами
+- true если: стандартная порция явно определена
+- false ТОЛЬКО если: совсем нет информации о количестве
+
+ВАЖНО: Если в описании несколько продуктов - суммируй все вместе!
+
+Ответь в JSON формате: {{"calories": число, "proteins": число, "fats": число, "carbs": число, "portion_clear": true/false}}"""
+
+        response = client.responses.create(
+            model="gpt-5",
+            input=input_text,
+            reasoning={"effort": "minimal"},
+            text={"verbosity": "low"}
+        )
+        
+        # Получаем результат
+        import json
+        response_text = response.output_text if hasattr(response, 'output_text') else str(response)
+        print(f"DEBUG: Ответ GPT-5: {response_text}")
+        
+        # Парсим JSON
+        if '```json' in response_text:
+            response_text = response_text.split('```json')[1].split('```')[0].strip()
+        elif '```' in response_text:
+            response_text = response_text.split('```')[1].split('```')[0].strip()
+        
+        kbju_data = json.loads(response_text)
+        
+        return {
+            'calories': int(kbju_data.get('calories', 0)),
+            'proteins': int(kbju_data.get('proteins', 0)),
+            'fats': int(kbju_data.get('fats', 0)),
+            'carbs': int(kbju_data.get('carbs', 0)),
+            'portion_clear': kbju_data.get('portion_clear', True)
+        }
+        
+    except Exception as e:
+        print(f"DEBUG: Ошибка GPT-5 анализа: {e}")
+        return {'calories': 0, 'proteins': 0, 'fats': 0, 'carbs': 0, 'portion_clear': False}
+
+def validate_kbju_with_gpt5(food_description: str, kbju_data: dict) -> dict:
+    """Валидирует КБЖУ через GPT-5"""
+    print(f"DEBUG: Валидируем КБЖУ через GPT-5")
+    
+    try:
+        input_text = f"""Проверь адекватность оценки КБЖУ.
+
+ПРОДУКТ: {food_description}
+
+ОЦЕНКА КБЖУ:
+- Калории: {kbju_data['calories']} ккал
+- Белки: {kbju_data['proteins']} г
+- Жиры: {kbju_data['fats']} г  
+- Углеводы: {kbju_data['carbs']} г
+
+Проверь:
+1. Калории соответствуют БЖУ (Б и У = 4 ккал/г, Ж = 9 ккал/г)?
+2. Значения реалистичны для продукта и порции?
+3. Пропорции БЖУ типичны?
+
+КРИТЕРИИ:
+- Если указаны граммы/мл → это ДОСТАТОЧНО
+- Детальное описание ("1 блин с 25гр сыра") → это ХОРОШО
+- Проблемы только если значения явно неадекватны
+
+Верни JSON: {{"is_valid": true/false, "confidence": 0-100, "issues": ["проблема1"], "suggestion": "текст или пустая строка"}}"""
+
+        response = client.responses.create(
+            model="gpt-5",
+            input=input_text,
+            reasoning={"effort": "medium"},
+            text={"verbosity": "low"}
+        )
+        
+        import json
+        response_text = response.output_text if hasattr(response, 'output_text') else str(response)
+        
+        if '```json' in response_text:
+            response_text = response_text.split('```json')[1].split('```')[0].strip()
+        elif '```' in response_text:
+            response_text = response_text.split('```')[1].split('```')[0].strip()
+        
+        validation = json.loads(response_text)
+        
+        return {
+            'is_valid': validation.get('is_valid', True),
+            'confidence': validation.get('confidence', 100),
+            'issues': validation.get('issues', []),
+            'suggestion': validation.get('suggestion', '')
+        }
+        
+    except Exception as e:
+        print(f"DEBUG: Ошибка валидации: {e}")
+        return {'is_valid': True, 'confidence': 100, 'issues': [], 'suggestion': ''}
+
 def calculate_targets_with_gpt(profile_data: dict, bmr: int, tdee: int, goal: str) -> dict:
-    """Расчёт таргетов с помощью GPT для более гибкой интерпретации цели"""
-    print(f"DEBUG: Используем GPT для расчёта таргетов")
+    """Расчёт таргетов с помощью GPT-5 для более гибкой интерпретации цели"""
+    print(f"DEBUG: Используем GPT-5 для расчёта таргетов")
     
     try:
         prompt = f"""Ты эксперт по питанию и фитнесу. На основе данных пользователя рассчитай персонализированные целевые показатели.
@@ -282,18 +379,15 @@ def calculate_targets_with_gpt(profile_data: dict, bmr: int, tdee: int, goal: st
   "explanation": "текст пояснения"
 }}"""
 
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты эксперт-нутрициолог. Отвечай только JSON."},
-                {"role": "user", "content": prompt}
-            ],
-            temperature=0.3,
-            max_tokens=400
+        response = client.responses.create(
+            model="gpt-5",
+            input=prompt,
+            reasoning={"effort": "high"},
+            text={"verbosity": "medium"}
         )
         
-        gpt_response = response.choices[0].message.content.strip()
-        print(f"DEBUG: GPT ответ: {gpt_response}")
+        gpt_response = response.output_text if hasattr(response, 'output_text') else str(response)
+        print(f"DEBUG: GPT-5 ответ: {gpt_response}")
         
         # Парсим JSON из ответа
         import json
@@ -731,54 +825,90 @@ async def auto_food_analysis(message: Message, state: FSMContext):
     await message.answer("🍽 Анализирую твою еду... ⏳")
     
     try:
-        # Отправляем запрос к GPT
-        prompt = f"Оцени КБЖУ {user_food}"
+        # ШАГ 1: Анализ через GPT-5
+        kbju_data = analyze_food_with_gpt5(user_food)
         
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты эксперт по питанию. Оценивай КБЖУ продуктов на основе описания пользователя."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=200
-        )
-        
-        gpt_response = response.choices[0].message.content
-        print(f"DEBUG: Ответ GPT: {gpt_response}")
-        
-        # Парсим КБЖУ из ответа
-        kbju_data = parse_kbju_from_gpt(gpt_response)
-        
-        # Если не удалось извлечь калории, просим уточнить
+        # Если полный провал (calories = 0)
         if kbju_data['calories'] == 0:
-            clarification_prompt = f"Для оценки КБЖУ {user_food} нужно больше информации о размере порции. Пожалуйста, уточните количество."
-            await message.answer(clarification_prompt)
+            await message.answer(
+                f"Не смог распознать: {user_food}\n\n"
+                "Попробуй описать подробнее:\n"
+                "• Что это?\n"
+                "• Сколько граммов/мл?\n"
+                "• Как приготовлено?"
+            )
             await state.update_data(original_food=user_food)
             await state.set_state(FoodStates.waiting_for_clarification)
             return
         
-        # Сохраняем еду в дневной учет
-        save_food_to_daily(message.from_user.id, user_food, kbju_data)
+        # ШАГ 2: Валидация через GPT-5
+        validation = validate_kbju_with_gpt5(user_food, kbju_data)
         
-        # Получаем дневную сводку
-        daily_summary = get_daily_summary(message.from_user.id)
-        
-        # Формируем ответ
-        response_text = f"🍽 Анализирую твою еду... ⏳\n\n"
-        response_text += f"Для {user_food}:\n"
+        # ШАГ 3: Показываем на РЕВЬЮ
+        response_text = f"📊 Результат анализа для:\n{user_food}\n\n"
         response_text += f"🔥 Калории: {kbju_data['calories']} ккал\n"
         response_text += f"🥩 Белки: {kbju_data['proteins']} г\n"
         response_text += f"🥑 Жиры: {kbju_data['fats']} г\n"
-        response_text += f"🍞 Углеводы: {kbju_data['carbs']} г\n\n"
+        response_text += f"🍞 Углеводы: {kbju_data['carbs']} г\n"
         
-        # Добавляем дневную сводку
+        # Показываем валидацию
+        if validation['confidence'] < 100:
+            response_text += f"\n🎯 Уверенность: {validation['confidence']}%\n"
+        
+        has_issues = not validation['is_valid'] or validation['issues']
+        if has_issues:
+            response_text += f"\n⚠️ Обнаружены проблемы:\n"
+            for issue in validation['issues']:
+                response_text += f"  • {issue}\n"
+            if validation['suggestion']:
+                response_text += f"\n💡 {validation['suggestion']}\n"
+        
+        # Сохраняем в state для подтверждения
+        await state.update_data(
+            food_description=user_food,
+            kbju_data=kbju_data,
+            validation=validation
+        )
+        
+        # Кнопки
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="✅ Сохранить"), KeyboardButton(text="✏️ Уточнить")]],
+            resize_keyboard=True
+        )
+        
+        if has_issues:
+            response_text += "\n\nДанные подозрительны. Что делать?"
+        else:
+            response_text += "\n\nВсё верно?"
+        
+        await message.answer(response_text, reply_markup=keyboard)
+        await state.set_state(FoodStates.waiting_for_review)
+        
+    except Exception as e:
+        print(f"DEBUG: Ошибка: {e}")
+        await message.answer("Извини, ошибка при анализе. Попробуй ещё раз.")
+
+@router.message(FoodStates.waiting_for_review)
+async def food_review(message: Message, state: FSMContext):
+    """Обработка ревью - пользователь подтверждает или уточняет"""
+    choice = message.text.strip()
+    data = await state.get_data()
+    
+    if choice == "✅ Сохранить":
+        # Сохраняем в БД
+        food_description = data.get('food_description', '')
+        kbju_data = data.get('kbju_data', {})
+        
+        save_food_to_daily(message.from_user.id, food_description, kbju_data)
+        daily_summary = get_daily_summary(message.from_user.id)
+        
+        response_text = f"✅ Сохранено!\n\n"
         response_text += f"📊 Итого за день ({daily_summary['meals']} приёмов пищи):\n"
         response_text += f"🔥 Калории: {daily_summary['calories']} ккал\n"
         response_text += f"🥩 Белки: {daily_summary['proteins']} г\n"
         response_text += f"🥑 Жиры: {daily_summary['fats']} г\n"
         response_text += f"🍞 Углеводы: {daily_summary['carbs']} г"
         
-        # Добавляем прогресс к цели (используем сохраненные таргеты)
         target = db.get_saved_targets(message.from_user.id)
         if target is None:
             target = db.calculate_target_calories(message.from_user.id)
@@ -787,11 +917,76 @@ async def auto_food_analysis(message: Message, state: FSMContext):
             progress = (daily_summary['calories'] / target['calories']) * 100
             response_text += f"\n\n🎯 Прогресс к цели: {progress:.1f}%"
         
-        await message.answer(response_text)
+        await message.answer(response_text, reply_markup=ReplyKeyboardRemove())
+        await state.clear()
+        
+    elif choice == "✏️ Уточнить" or choice == "✏️ Уточнить еще раз":
+        await message.answer(
+            "Уточни описание:\n\n"
+            "• Укажи граммы: '200 грамм'\n"
+            "• Размер: 'большое яблоко'\n"
+            "• Детали: 'жареная на масле'\n"
+            "• Или опиши заново",
+            reply_markup=ReplyKeyboardRemove()
+        )
+        await state.set_state(FoodStates.waiting_for_correction)
+    else:
+        await message.answer("Выбери: ✅ Сохранить или ✏️ Уточнить")
+
+@router.message(FoodStates.waiting_for_correction)
+async def food_correction(message: Message, state: FSMContext):
+    """Обработка уточнения"""
+    data = await state.get_data()
+    original_food = data.get('food_description', '')
+    correction = message.text.strip()
+    
+    # Умное объединение
+    if len(correction.split()) <= 3:
+        corrected_food = f"{original_food} {correction}"
+    else:
+        corrected_food = correction
+    
+    await message.answer("🔄 Пересчитываю... ⏳")
+    
+    try:
+        # Анализ + валидация
+        kbju_data = analyze_food_with_gpt5(corrected_food)
+        validation = validate_kbju_with_gpt5(corrected_food, kbju_data)
+        
+        # Ревью
+        response_text = f"📊 Пересчет для:\n{corrected_food}\n\n"
+        response_text += f"🔥 Калории: {kbju_data['calories']} ккал\n"
+        response_text += f"🥩 Белки: {kbju_data['proteins']} г\n"
+        response_text += f"🥑 Жиры: {kbju_data['fats']} г\n"
+        response_text += f"🍞 Углеводы: {kbju_data['carbs']} г\n"
+        
+        if validation['confidence'] < 100:
+            response_text += f"\n🎯 Уверенность: {validation['confidence']}%\n"
+        
+        has_issues = not validation['is_valid'] or validation['issues']
+        if has_issues:
+            response_text += f"\n⚠️ Проблемы:\n"
+            for issue in validation['issues']:
+                response_text += f"  • {issue}\n"
+            if validation['suggestion']:
+                response_text += f"\n💡 {validation['suggestion']}\n"
+        
+        await state.update_data(food_description=corrected_food, kbju_data=kbju_data, validation=validation)
+        
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="✅ Сохранить"), KeyboardButton(text="✏️ Уточнить еще раз")]],
+            resize_keyboard=True
+        )
+        
+        response_text += "\n\n" + ("Проблемы остались. Что делать?" if has_issues else "Теперь верно?")
+        
+        await message.answer(response_text, reply_markup=keyboard)
+        await state.set_state(FoodStates.waiting_for_review)
         
     except Exception as e:
-        print(f"DEBUG: Ошибка при анализе еды: {e}")
-        await message.answer("Извини, произошла ошибка при анализе еды. Попробуй ещё раз.")
+        print(f"DEBUG: Ошибка: {e}")
+        await message.answer("Ошибка. Попробуй еще раз.")
+        await state.clear()
 
 @router.message(FoodStates.waiting_for_clarification)
 async def food_clarification(message: Message, state: FSMContext):
@@ -801,64 +996,47 @@ async def food_clarification(message: Message, state: FSMContext):
     
     combined_food = f"{original_food} {clarification}"
     
-    await message.answer("🔄 Пересчитываю КБЖУ... ⏳")
+    await message.answer("🔄 Пересчитываю... ⏳")
     
     try:
-        # Отправляем запрос к GPT с уточнением
-        prompt = f"Оцени КБЖУ {combined_food}\n\nВключай в ответ саммари:\n🔥 Калории: 0 ккал\n🥩 Белки: 0 г\n🥑 Жиры: 0 г\n🍞 Углеводы: 0 г"
+        # Анализ + валидация через GPT-5
+        kbju_data = analyze_food_with_gpt5(combined_food)
+        validation = validate_kbju_with_gpt5(combined_food, kbju_data)
         
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
-            messages=[
-                {"role": "system", "content": "Ты эксперт по питанию. Оценивай КБЖУ продуктов на основе описания пользователя."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=200
-        )
-        
-        gpt_response = response.choices[0].message.content
-        print(f"DEBUG: Ответ GPT с уточнением: {gpt_response}")
-        
-        # Парсим КБЖУ из ответа
-        kbju_data = parse_kbju_from_gpt(gpt_response)
-        
-        # Сохраняем еду в дневной учет
-        save_food_to_daily(message.from_user.id, combined_food, kbju_data)
-        
-        # Получаем дневную сводку
-        daily_summary = get_daily_summary(message.from_user.id)
-        
-        # Формируем ответ
-        response_text = f"🔄 Пересчитываю КБЖУ... ⏳\n\n"
-        response_text += f"Для {combined_food}:\n"
+        # Показываем на ревью
+        response_text = f"📊 Пересчет для:\n{combined_food}\n\n"
         response_text += f"🔥 Калории: {kbju_data['calories']} ккал\n"
         response_text += f"🥩 Белки: {kbju_data['proteins']} г\n"
         response_text += f"🥑 Жиры: {kbju_data['fats']} г\n"
-        response_text += f"🍞 Углеводы: {kbju_data['carbs']} г\n\n"
+        response_text += f"🍞 Углеводы: {kbju_data['carbs']} г\n"
         
-        # Добавляем дневную сводку
-        response_text += f"📊 Итого за день ({daily_summary['meals']} приёмов пищи):\n"
-        response_text += f"🔥 Калории: {daily_summary['calories']} ккал\n"
-        response_text += f"🥩 Белки: {daily_summary['proteins']} г\n"
-        response_text += f"🥑 Жиры: {daily_summary['fats']} г\n"
-        response_text += f"🍞 Углеводы: {daily_summary['carbs']} г"
+        if validation['confidence'] < 100:
+            response_text += f"\n🎯 Уверенность: {validation['confidence']}%\n"
         
-        # Добавляем прогресс к цели (используем сохраненные таргеты)
-        target = db.get_saved_targets(message.from_user.id)
-        if target is None:
-            target = db.calculate_target_calories(message.from_user.id)
+        has_issues = not validation['is_valid'] or validation['issues']
+        if has_issues:
+            response_text += f"\n⚠️ Проблемы:\n"
+            for issue in validation['issues']:
+                response_text += f"  • {issue}\n"
+            if validation['suggestion']:
+                response_text += f"\n💡 {validation['suggestion']}\n"
         
-        if target and target['calories'] > 0:
-            progress = (daily_summary['calories'] / target['calories']) * 100
-            response_text += f"\n\n🎯 Прогресс к цели: {progress:.1f}%"
+        await state.update_data(food_description=combined_food, kbju_data=kbju_data, validation=validation)
         
-        await message.answer(response_text)
+        keyboard = ReplyKeyboardMarkup(
+            keyboard=[[KeyboardButton(text="✅ Сохранить"), KeyboardButton(text="✏️ Уточнить")]],
+            resize_keyboard=True
+        )
+        
+        response_text += "\n\n" + ("Данные подозрительны. Что делать?" if has_issues else "Теперь верно?")
+        
+        await message.answer(response_text, reply_markup=keyboard)
+        await state.set_state(FoodStates.waiting_for_review)
         
     except Exception as e:
-        print(f"DEBUG: Ошибка при уточнении еды: {e}")
-        await message.answer("Извини, произошла ошибка при анализе еды. Попробуй ещё раз.")
-    
-    await state.clear()
+        print(f"DEBUG: Ошибка: {e}")
+        await message.answer("Ошибка. Попробуй еще раз.")
+        await state.clear()
 
 @router.message(Command("day"))
 async def show_daily_summary(message: Message):
